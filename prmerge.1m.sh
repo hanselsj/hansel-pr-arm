@@ -123,7 +123,11 @@ case "$1" in
           if is_armed "$2"; then disarm "$2"; log "[user] DISARM $2"; else arm "$2"; log "[user] ARM $2"; fi
           trigger_fetch; exit 0 ;;
   merge)  do_merge "$2" "user"; trigger_fetch; exit 0 ;;
-  arm-all-ready) n=0; while IFS= read -r k; do [ -n "$k" ] && ! is_blacklisted "$k" && arm "$k" && n=$((n+1)); done < <(echo "$3" | tr ' ' '\n'); log "[user] ARM ALL ($n ready)"; trigger_fetch; exit 0 ;;
+  arm-all-ready) n=0
+          while IFS= read -r k; do
+            [ -n "$k" ] && ! is_blacklisted "$k" && arm "$k" && n=$((n+1))
+          done < <(jq -r '.[] | select((.isDraft|not) and .review=="APPROVED" and (.checks=="SUCCESS" or .checks=="NONE")) | .key' "$CACHE" 2>/dev/null)
+          log "[user] ARM ALL ($n ready)"; trigger_fetch; exit 0 ;;
   disarm-all) : > "$STATE"; log "[user] DISARM ALL"; exit 0 ;;
   openlog) open "$LOG" 2>/dev/null; exit 0 ;;
   refresh) trigger_fetch; exit 0 ;;          # forced fetch (used by "Refresh now")
@@ -170,14 +174,13 @@ jq -r \
 
   ($prs | map(select((.isDraft|not) and .review=="APPROVED" and (.checks=="SUCCESS" or .checks=="NONE")))) as $readyprs |
   ($readyprs | length) as $ready |
-  ($readyprs | map(.key) | join(" ")) as $readykeys |
   ([$prs[] | select(.armed)] | length) as $narmed |
 
   (if $narmed>0 then "🔖 \($prs|length)  ⚡\($narmed)" else "🔖 \($prs|length)" end),
   "---",
   "\($prs|length) open · \($ready) ready · \($narmed) armed · updated \($aged) | size=12 color=#8e8e93",
   "Refresh | bash=\"\($self)\" param1=refresh terminal=false refresh=true",
-  "Arm ALL | bash=\"\($self)\" param1=arm-all-ready param2=x param3=\"\($readykeys)\" terminal=false refresh=true",
+  "Arm ALL | bash=\"\($self)\" param1=arm-all-ready terminal=false refresh=true",
   "Disarm ALL | bash=\"\($self)\" param1=disarm-all terminal=false refresh=true",
   "Logs | bash=\"\($self)\" param1=openlog terminal=false refresh=false",
   "---",
