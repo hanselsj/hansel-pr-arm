@@ -35,14 +35,14 @@ arm()      { is_armed "$1" || echo "$1" >> "$STATE"; }
 disarm()   { grep -vxF "$1" "$STATE" > "$STATE.tmp" 2>/dev/null; mv "$STATE.tmp" "$STATE"; }
 log()      { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
-do_merge() {  # arg: owner/repo#number
-  local key="$1" repo num
-  if is_blacklisted "$key"; then log "BLOCKED merge (blacklist) $key"; return 1; fi
+do_merge() {  # args: owner/repo#number, actor(user|engine)
+  local key="$1" actor="${2:-engine}" repo num
+  if is_blacklisted "$key"; then log "[$actor] BLOCKED merge (blacklist) $key"; return 1; fi
   repo="${key%#*}"; num="${key##*#}"
   if gh pr merge "$num" --repo "$repo" --merge --delete-branch >/dev/null 2>>"$LOG"; then
-    log "MERGED $key (merge commit + delete branch)"; disarm "$key"; return 0
+    log "[$actor] MERGED $key (merge commit + delete branch)"; disarm "$key"; return 0
   fi
-  log "MERGE FAILED $key"; return 1
+  log "[$actor] MERGE FAILED $key"; return 1
 }
 
 # Spawn a detached background fetch unless one is already running.
@@ -92,25 +92,25 @@ do_fetch() {
   # Completeness gate: only act + cache on a complete fetch.
   FETCHED=$(jq 'length' "$TMP")
   if [ -z "$EXPECTED" ]; then
-    log "FETCH failed (no GitHub response) — keeping previous snapshot"
+    log "[engine] FETCH failed (no GitHub response) — keeping previous snapshot"
     open -g "swiftbar://refreshplugin?name=$PLUGIN_NAME" 2>/dev/null; exit 0
   fi
   if [ "$FETCHED" -lt "$EXPECTED" ]; then
-    log "PARTIAL fetch: got $FETCHED of $EXPECTED — skipping engine, keeping previous snapshot"
+    log "[engine] PARTIAL fetch: got $FETCHED of $EXPECTED — skipping engine, keeping previous snapshot"
     open -g "swiftbar://refreshplugin?name=$PLUGIN_NAME" 2>/dev/null; exit 0
   fi
 
   # Merge engine: merge every armed PR that is ready (complete data only).
   while IFS= read -r key; do
     [ -z "$key" ] && continue
-    if is_armed "$key" && do_merge "$key"; then
+    if is_armed "$key" && do_merge "$key" "engine"; then
       # native SwiftBar notification, clickable to the merged PR
       enc=$(jq -rn --arg s "$key" '$s|@uri')
       url=$(jq -r --arg k "$key" '.[]|select(.key==$k)|.url' "$TMP")
       eurl=$(jq -rn --arg s "$url" '$s|@uri')
       open -g "swiftbar://notify?plugin=$PLUGIN_NAME&title=PR%20auto-merged%20%E2%9C%85&subtitle=$enc&body=merge%20commit%20%2B%20branch%20deleted&href=$eurl&silent=false" 2>/dev/null
     fi
-  done < <(jq -r '.[] | select((.isDraft|not) and .review=="APPROVED" and .checks=="SUCCESS") | .key' "$TMP")
+  done < <(jq -r '.[] | select((.isDraft|not) and .review=="APPROVED" and (.checks=="SUCCESS" or .checks=="NONE")) | .key' "$TMP")
 
   mv "$TMP" "$CACHE"                              # publish fresh snapshot
   open -g "swiftbar://refreshplugin?name=$PLUGIN_NAME" 2>/dev/null   # redraw menu
@@ -119,12 +119,12 @@ do_fetch() {
 
 # ---- action dispatch (clicks) ---------------------------------------------
 case "$1" in
-  toggle) if is_blacklisted "$2"; then log "BLOCKED toggle (blacklist) $2"; exit 0; fi
-          if is_armed "$2"; then disarm "$2"; log "DISARM $2"; else arm "$2"; log "ARM $2"; fi
+  toggle) if is_blacklisted "$2"; then log "[user] BLOCKED toggle (blacklist) $2"; exit 0; fi
+          if is_armed "$2"; then disarm "$2"; log "[user] DISARM $2"; else arm "$2"; log "[user] ARM $2"; fi
           trigger_fetch; exit 0 ;;
-  merge)  do_merge "$2"; trigger_fetch; exit 0 ;;
-  arm-all-ready) while IFS= read -r k; do [ -n "$k" ] && ! is_blacklisted "$k" && arm "$k"; done < <(echo "$3" | tr ' ' '\n'); trigger_fetch; exit 0 ;;
-  disarm-all) : > "$STATE"; log "DISARM ALL"; exit 0 ;;
+  merge)  do_merge "$2" "user"; trigger_fetch; exit 0 ;;
+  arm-all-ready) n=0; while IFS= read -r k; do [ -n "$k" ] && ! is_blacklisted "$k" && arm "$k" && n=$((n+1)); done < <(echo "$3" | tr ' ' '\n'); log "[user] ARM ALL ($n ready)"; trigger_fetch; exit 0 ;;
+  disarm-all) : > "$STATE"; log "[user] DISARM ALL"; exit 0 ;;
   openlog) open "$LOG" 2>/dev/null; exit 0 ;;
   refresh) trigger_fetch; exit 0 ;;          # forced fetch (used by "Refresh now")
   fetch)  do_fetch ;;
@@ -145,7 +145,7 @@ if [ ! -s "$CACHE" ]; then
 fi
 
 AGE=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
-if   [ "$AGE" -lt 90 ];   then AGED="just now"
+if   [ "$AGE" -lt 90 ];   then AGED="${AGE}s ago"
 elif [ "$AGE" -lt 3600 ]; then AGED="$((AGE/60))m ago"
 else AGED="$((AGE/3600))h ago"; fi
 
@@ -162,13 +162,13 @@ jq -r \
   # mutually-exclusive section per PR, in priority order
   def bucket:
     if .isDraft                                              then {o:5, h:"DRAFTS",                 ico:"💤", hcol:"#8e8e93", rcol:"#8e8e93"}
-    elif (.review=="APPROVED" and .checks=="SUCCESS")        then {o:0, h:"READY TO MERGE",         ico:"✅", hcol:"#28a745", rcol:"#28a745"}
+    elif (.review=="APPROVED" and (.checks=="SUCCESS" or .checks=="NONE"))        then {o:0, h:"READY TO MERGE",         ico:"✅", hcol:"#28a745", rcol:"#28a745"}
     elif .armed                                              then {o:1, h:"ARMED · WAITING",        ico:"⚡", hcol:"#d98100", rcol:""}
     elif (.review=="CHANGES_REQUESTED" or .checks=="FAILURE" or .checks=="ERROR")
                                                              then {o:2, h:"NEEDS ATTENTION",        ico:"⚠️", hcol:"#e0245e", rcol:"#e0245e"}
     else                                                          {o:3, h:"WAITING ON REVIEW / CI", ico:"⏳", hcol:"#8e8e93", rcol:""} end;
 
-  ($prs | map(select((.isDraft|not) and .review=="APPROVED" and .checks=="SUCCESS"))) as $readyprs |
+  ($prs | map(select((.isDraft|not) and .review=="APPROVED" and (.checks=="SUCCESS" or .checks=="NONE")))) as $readyprs |
   ($readyprs | length) as $ready |
   ($readyprs | map(.key) | join(" ")) as $readykeys |
   ([$prs[] | select(.armed)] | length) as $narmed |

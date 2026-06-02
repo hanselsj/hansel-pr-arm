@@ -26,9 +26,10 @@ Click any PR row to **arm/disarm** auto-merge. Each row's submenu: **Arm/Disarm 
 
 - Lists PRs via `gh api graphql` (`author:@me is:pr is:open`), paginated at 25/page (the `statusCheckRollup` field 502s above that).
 - The menu **renders instantly from a cached snapshot** (`~/.pr-merge-queue/last.json`); a detached background fetch refreshes GitHub data + runs the merge engine, then asks SwiftBar to redraw. Opening the menu never blocks on the network.
-- **Merge engine** (runs each fetch): any *armed* PR that is `APPROVED` + checks `SUCCESS` is merged with **merge commit + delete branch** (`gh pr merge --merge --delete-branch`), then a native notification fires.
+- **Merge engine** (runs each fetch): any *armed* PR that is `APPROVED` and has checks `SUCCESS` **or no checks** (`NONE`) is merged with **merge commit + delete branch** (`gh pr merge --merge --delete-branch`), then a native notification fires. PRs with `PENDING`/`FAILURE` checks are never auto-merged.
 - **Completeness gate:** if a fetch returns fewer PRs than `issueCount` (search rate-limit / 502), the engine is skipped that cycle — a partial fetch can never trigger a wrong merge.
 - **Blacklist:** repos in the `BLACKLIST` var are never listed, armed, or merged.
+- **Audit log** (`~/.pr-merge-queue/merge.log`): every action is tagged `[user]` (menu clicks) or `[engine]` (auto-merge / background fetch), so you can tell what merged on its own vs. what you did.
 
 ## Install
 
